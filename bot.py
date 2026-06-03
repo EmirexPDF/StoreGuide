@@ -1,7 +1,7 @@
 import os
 import asyncio
 from flask import Flask, request
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Bot
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
 # Initialize Flask app
@@ -9,12 +9,12 @@ app = Flask(__name__)
 
 # Retrieve environment variables
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
-# Render provides the PORT dynamically, default to 5000 for local testing
 PORT = int(os.environ.get("PORT", 5000)) 
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL") # Example: https://your-app.onrender.com
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL") 
 
-# Initialize Telegram Application
-tg_app = Application.builder().token(TOKEN).build()
+# Direct Bot instantiation to bypass Python 3.14 Updater builder bugs
+bot = Bot(token=TOKEN)
+tg_app = Application.builder().bot(bot).updater(None).build()
 
 # --- BOT LOGIC ---
 
@@ -27,7 +27,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    # Check if message exists (from text command) or if it's a callback query
     if update.message:
         await update.message.reply_text(
             "Welcome to the Store Guide Bot! 🛍️\nHow can I assist you today?", 
@@ -67,42 +66,49 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     elif query.data.startswith("cat_"):
         category = query.data.split("_")[1].capitalize()
-        text = f"You selected **{category}**. Here are the featured items today...\n(Integrate your regional platform link or catalog here!)"
+        text = f"You selected **{category}**. Here are the featured items today...\n(Integrate your links or catalog here!)"
         keyboard = [[InlineKeyboardButton("🔙 Back to Categories", callback_data="categories")]]
         await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
 
-# Register Telegram Handlers
+# Register Handlers
 tg_app.add_handler(CommandHandler("start", start))
 tg_app.add_handler(CallbackQueryHandler(button_handler))
 
-# --- FLASK ROUTES FOR WEBHOOK ---
+# --- FLASK ROUTES ---
 
 @app.route("/", methods=["GET"])
 def index():
-    return "Store Guide Bot is running!", 200
+    return "Store Guide Bot is running active!", 200
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    """Receives updates from Telegram and processes them."""
+    """Processes incoming updates directly via async loop execution."""
     if request.method == "POST":
-        update = Update.de_json(request.get_json(force=True), tg_app.bot)
-        # Process the update asynchronously
-        asyncio.run(tg_app.process_update(update))
+        try:
+            json_data = request.get_json(force=True)
+            update = Update.de_json(json_data, bot)
+            
+            # Create loop to safely run async update processing
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(tg_app.initialize())
+            loop.run_until_complete(tg_app.process_update(update))
+            loop.close()
+        except Exception as e:
+            print(f"Error processing update: {e}")
+            
         return "OK", 200
 
-# --- INITIALIZATION ---
-
 def setup_webhook():
-    """Registers the webhook URL with Telegram on startup."""
+    """Sets webhook parameters directly with Telegram."""
     if WEBHOOK_URL:
-        asyncio.run(tg_app.initialize())
-        asyncio.run(tg_app.bot.set_webhook(url=f"{WEBHOOK_URL}/webhook"))
-        print(f"Webhook set successfully to {WEBHOOK_URL}/webhook")
-    else:
-        print("Warning: WEBHOOK_URL not found. Running locally without registering webhook.")
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(bot.set_webhook(url=f"{WEBHOOK_URL}/webhook"))
+        loop.close()
+        print(f"Webhook explicitly linked to: {WEBHOOK_URL}/webhook")
 
-# Trigger webhook registration when running in production
-if os.environ.get("TELEGRAM_TOKEN"):
+if TOKEN:
     setup_webhook()
 
 if __name__ == "__main__":
